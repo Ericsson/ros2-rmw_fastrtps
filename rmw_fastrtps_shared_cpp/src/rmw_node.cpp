@@ -150,6 +150,8 @@ __rmw_destroy_node(
   rmw_free(const_cast<char *>(node->name));
   rmw_free(const_cast<char *>(node->namespace_));
   rmw_node_free(node);
+
+  RCUTILS_CAN_RETURN_WITH_ERROR_OF(RMW_RET_ERROR);  // on completion
   return RMW_RET_OK;
 }
 
