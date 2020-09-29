@@ -92,52 +92,6 @@ static
 CustomParticipantInfo *
 __create_participant(
   const char * identifier,
-  ParticipantAttributes participantAttrs,
-  bool leave_middleware_default_qos,
-  rmw_dds_common::Context * common_context)
-{
-  // Declare everything before beginning to create things.
-  ::ParticipantListener * listener = nullptr;
-  Participant * participant = nullptr;
-  CustomParticipantInfo * participant_info = nullptr;
-
-  try {
-    listener = new ::ParticipantListener(
-      identifier, common_context);
-  } catch (std::bad_alloc &) {
-    RMW_SET_ERROR_MSG("failed to allocate participant listener");
-    goto fail;
-  }
-
-  participant = Domain::createParticipant(participantAttrs, listener);
-  if (!participant) {
-    RMW_SET_ERROR_MSG("create_node() could not create participant");
-    return nullptr;
-  }
-
-  try {
-    participant_info = new CustomParticipantInfo();
-  } catch (std::bad_alloc &) {
-    RMW_SET_ERROR_MSG("failed to allocate node impl struct");
-    goto fail;
-  }
-  participant_info->leave_middleware_default_qos = leave_middleware_default_qos;
-
-  participant_info->participant = participant;
-  participant_info->listener = listener;
-
-  return participant_info;
-fail:
-  rmw_free(listener);
-  if (participant) {
-    Domain::removeParticipant(participant);
-  }
-  return nullptr;
-}
-
-CustomParticipantInfo *
-rmw_fastrtps_shared_cpp::create_participant(
-  const char * identifier,
   size_t domain_id,
   const rmw_security_options_t * security_options,
   bool localhost_only,
@@ -253,20 +207,58 @@ rmw_fastrtps_shared_cpp::create_participant(
     return nullptr;
 #endif
   }
-  return __create_participant(
-    identifier,
-    participantAttrs,
-    leave_middleware_default_qos,
-    common_context);
+
+  std::unique_ptr<::ParticipantListener> listener(
+    new (std::nothrow) ::ParticipantListener(identifier, common_context));
+  if (!listener) {
+    RMW_SET_ERROR_MSG("failed to allocate participant listener");
+    return nullptr;
+  }
+
+  std::unique_ptr<Participant, std::function<void(Participant *)>> participant(
+    Domain::createParticipant(participantAttrs, listener.get()),
+    [](Participant * participant) { Domain::removeParticipant(participant); });
+  if (!participant) {
+    RMW_SET_ERROR_MSG("create_node() could not create participant");
+    return nullptr;
+  }
+
+  CustomParticipantInfo * participant_info = new (std::nothrow) CustomParticipantInfo();
+  if (!participant_info) {
+    RMW_SET_ERROR_MSG("failed to allocate node impl struct");
+    return nullptr;
+  }
+  participant_info->leave_middleware_default_qos = leave_middleware_default_qos;
+  participant_info->participant = participant.release();
+  participant_info->listener = listener.release();
+
+  return participant_info;
+}
+
+CustomParticipantInfo *
+rmw_fastrtps_shared_cpp::create_participant(
+  const char * identifier,
+  size_t domain_id,
+  const rmw_security_options_t * security_options,
+  bool localhost_only,
+  const char * enclave,
+  rmw_dds_common::Context * common_context)
+{
+  try {
+    return __create_participant(
+      identifier, domain_id, security_options,
+      localhost_only, enclave, common_context);
+  } catch (const std::exception & e) {
+    RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
+      "failed to create participant due to %s",
+      e.what());
+    return nullptr;
+  }
 }
 
 rmw_ret_t
 rmw_fastrtps_shared_cpp::destroy_participant(CustomParticipantInfo * participant_info)
 {
-  if (!participant_info) {
-    RMW_SET_ERROR_MSG("participant_info is null");
-    return RMW_RET_ERROR;
-  }
   Domain::removeParticipant(participant_info->participant);
   delete participant_info->listener;
   participant_info->listener = nullptr;
